@@ -67,4 +67,4 @@ def get_message(topic):
 @app.route("/status", methods=["GET"])
 def status():
     # This is a simplified placeholder. Actual implementation will vary.
-    return jsonify(role=node_status["role"], term=node_status["term"])
+    return jsonify(role=raft_node.role.value, term=raft_node.get_last_log_term())

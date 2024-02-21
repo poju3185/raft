@@ -47,7 +47,7 @@ class Node:
         self.current_term = 0
         self.role = Role.Candidate
         self.peers = peers
-        self.log = []
+        self.log: list[LogEntry] = []
         self.election_timer = ResettableTimer(self.run_election)
         # self.election_timer.run()
 
