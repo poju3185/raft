@@ -146,7 +146,7 @@ class Node:
             if vote_response.vote_granted:
                 self.votes_received.add(peer["ip"])
                 if (
-                    len(self.votes_received) > len(self.peers) // 2
+                    len(self.votes_received) > (len(self.peers)+1) // 2  # include the node itself
                     and self.role != Role.Leader
                 ):
                     self.become_leader()
