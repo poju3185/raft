@@ -6,6 +6,7 @@ from logg import debug_print
 from timer import ResettableTimer
 from threading import Lock
 import threading
+import time
 class Role(Enum):
     Follower = "Follower"
     Leader = "Leader"
@@ -59,20 +60,30 @@ class Node:
             return self.handle_vote_request(sender_id, rpc_message)
     # Descide to vote or not based on the term or whether i have voted in this term
     def handle_vote_request(self, sender_id, vote_request):
-        if vote_request.term < self.state.current_term:
+        with self.lock:  # 确保线程安全
+            if vote_request.term < self.state.current_term:
+                return serialize(VoteResponse(term=self.state.current_term, vote_granted=False))
+        
+            if (vote_request.term > self.state.current_term) or \
+            (self.state.voted_for is None or self.state.voted_for == sender_id):
+                if self.is_log_up_to_date(vote_request.last_log_index, vote_request.last_log_term):
+                    self.state.current_term = vote_request.term
+                    self.state.voted_for = sender_id
+                    self.election_timer.reset()
+                    return serialize(VoteResponse(term=self.state.current_term, vote_granted=True))
+            
             return serialize(VoteResponse(term=self.state.current_term, vote_granted=False))
-        if (self.state.voted_for is None or self.state.voted_for == sender_id) and \
-           self.is_log_up_to_date(vote_request.last_log_index, vote_request.last_log_term):
-            self.state.voted_for = sender_id
-            self.state.current_term = vote_request.term # Not sure to update the term to the vote.request.term or just self.term + 1 is enough?
-            self.election_timer.reset()
-            return serialize(VoteResponse(term=self.state.current_term, vote_granted=True))
-        return serialize(VoteResponse(term=self.state.current_term, vote_granted=False))
+
 
     def is_log_up_to_date(self, last_log_index, last_log_term):
-        # chekc if the log is up to date
-        # have not finished
+        local_last_index = self.get_last_log_index()
+        local_last_term = self.get_last_log_term()
+        if last_log_term < local_last_term:
+            return False
+        if last_log_term == local_last_term and last_log_index < local_last_index:
+            return False
         return True
+
     
     def get_last_log_index(self):
         return len(self.log) - 1
@@ -101,15 +112,17 @@ class Node:
     # Maybe we should use a thread pool to send vote request to all peers
     def send_vote_request(self, peer, vote_request):
         try:
-            res = requests.post(f"{peer['ip']}:{peer['port']}/vote", json=vote_request)
-            if res.ok:
-                vote_response = deserialize(res.json())
-                if vote_response.vote_granted:
-                    self.votes_received.add(peer['id'])
-                    if len(self.votes_received) > len(self.peers) // 2:
-                        self.become_leader()
+            response = requests.post(f"http://{peer['ip']}:{peer['port']}/vote", json=vote_request, timeout=2)
+            if response.status_code == 200:
+                with self.lock:
+                    vote_response = deserialize(response.json())
+                    if vote_response.vote_granted:
+                        self.votes_received.add(peer['id'])
+                        if len(self.votes_received) > len(self.peers) // 2 and self.role != Role.Leader:
+                            self.become_leader()
         except Exception as e:
             debug_print(f"Failed to send vote request to {peer['ip']}:{peer['port']} due to {e}")
+
 
     def become_leader(self):
         with self.lock:
@@ -119,25 +132,32 @@ class Node:
 
         self.send_heartbeats()
 
-    def send_heartbeats(self):
-        for peer in self.peers:
-            self.send_heartbeat(peer)
+    def start_heartbeat_loop(self):
+        self.heartbeat_thread = threading.Thread(target=self.send_heartbeats_loop)
+        self.heartbeat_thread.daemon = True 
+        self.heartbeat_thread.start()
 
-    def send_heartbeat(self, peer):
-        HEARTBEAT_INTERVAL = 0.5
+    def send_heartbeats_loop(self):
+        HEARTBEAT_INTERVAL = 0.5  
+        while self.role == Role.Leader:  
+            self.send_heartbeats()
+            time.sleep(HEARTBEAT_INTERVAL)  
+
+    def send_heartbeats(self):
         append_entries_rpc = serialize({
             'term': self.state.current_term,
             'leader_id': self.id,
         })
+        for peer in self.peers:
+            threading.Thread(target=self.send_heartbeat, args=(peer, append_entries_rpc)).start()
 
+    def send_heartbeat(self, peer, append_entries_rpc):
         try:
             response = requests.post(f"{peer['ip']}:{peer['port']}/append-entries", json=append_entries_rpc)
             if response.status_code == 200:
                 pass
         except requests.exceptions.RequestException as e:
             debug_print(f"Failed to send heartbeat to {peer['id']} due to {e}")
-
-        threading.Timer(HEARTBEAT_INTERVAL, self.send_heartbeats).start()
 
 
 
