@@ -4,12 +4,15 @@ from raft import Node
 
 app = Flask(__name__)
 
-raft_node: Node = None # type: ignore
+raft_node: Node = None  # type: ignore
 
 # In-memory storage for topics and their messages
 topics = {}
-# Placeholder for node status
-node_status = {"role": "Follower", "term": 0}
+
+
+@app.route("/", methods=["GET"])
+def home():
+    return "Raft MQ final project"
 
 
 @app.route("/request-vote/<id>", methods=["POST"])
@@ -17,6 +20,17 @@ def request_vote(id):
     rpc_message_json = request.json
     res = raft_node.rpc_handler(id, rpc_message_json)
     return jsonify(res)
+
+
+@app.route("/heartbeat", methods=["POST"])
+def heartbeat():
+    data = request.json
+    if not data:
+        return "", 400
+    term = data.get("term")
+    id = data.get("leader_id")
+    raft_node.handle_heartbeat(term, id)
+    return "", 200
 
 
 @app.route("/topic", methods=["PUT"])
@@ -67,4 +81,4 @@ def get_message(topic):
 @app.route("/status", methods=["GET"])
 def status():
     # This is a simplified placeholder. Actual implementation will vary.
-    return jsonify(role=node_status["role"], term=node_status["term"])
+    return jsonify(role=raft_node.role.value, term=raft_node.state.current_term)
