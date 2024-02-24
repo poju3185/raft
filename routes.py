@@ -82,3 +82,19 @@ def get_message(topic):
 def status():
     # This is a simplified placeholder. Actual implementation will vary.
     return jsonify(role=raft_node.role.value, term=raft_node.state.current_term)
+
+
+# For testing
+@app.route("/leader", methods=["GET"])
+def leader():
+    # This is a simplified placeholder. Actual implementation will vary.
+    raft_node.become_leader()
+    return "ok", 200
+
+
+# For testing
+@app.route("/election", methods=["GET"])
+def election():
+    # This is a simplified placeholder. Actual implementation will vary.
+    raft_node.run_election()
+    return "ok", 200

@@ -29,4 +29,4 @@ if __name__ == "__main__":
     _my_ip, my_port, peers = parse_config_json(config_json_fp, config_json_idx)
 
     routes.raft_node = Node(config_json_idx, peers)
-    app.run(debug=True, host="localhost", port=my_port, threaded=True)  # type: ignore
+    app.run(debug=False, host="localhost", port=my_port, threaded=True)  # type: ignore
