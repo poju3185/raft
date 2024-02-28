@@ -24,15 +24,18 @@ class PersistentState:
 
 @dataclass
 class LogEntry:
-    message: str
+    action: str  # CREATE | APPEND | POP
+    topic: str
     term: int
+    message: str | None = None
 
 
 @dataclass
 class LogInfo:
     leader_id: int
     leader_term: int
-    index: int
+    start_index: int
+    commit_index: int
     logs: list[LogEntry]
 
 
@@ -61,7 +64,7 @@ def deserialize(rpc_dict):
 class Node:
     def __init__(self, id, peers):
         self.id: int = id
-        self.state = PersistentState()
+        self.topics: dict[str, list[str]] = {}
         if self.id == 0:
             self.state = PersistentState(current_term=3)
         else:
@@ -70,12 +73,14 @@ class Node:
         self.peers: list[dict[str, int]] = peers
         if self.id == 0:
             self.log: list[LogEntry] = [
-                LogEntry(message="hi", term=0),
-                LogEntry(message="yo", term=2),
-                LogEntry(message="yo", term=3),
+                LogEntry(action="CREATE", topic="Game", term=0),
+                LogEntry(action="CREATE", topic="Anime", term=1),
+                LogEntry(action="APPEND", topic="Game", message="hi", term=2),
             ]
         else:
-            self.log: list[LogEntry] = [LogEntry(message="hi", term=1)]
+            self.log: list[LogEntry] = [
+                LogEntry(action="CREATE", topic="Sport", term=1)
+            ]
         self.log_confirmed: set[int] = set()
         self.votes_received: set[int] = set()  # Count the votes received
         self.election_timer = ResettableTimer(
@@ -83,8 +88,11 @@ class Node:
         )  # 150, 300
         self.election_timer.run()
         self.lock = Lock()
+        self.commit_index = -1
+        self.last_applied = -1
         # Only leader needs to maintain the table, the last same log between leader and follower
-        self.commit_index_table: dict[int, int] = {peer["id"]: -1 for peer in peers}
+        self.next_index_table: dict[int, int] = {peer["id"]: -1 for peer in peers}
+        self.match_index_table: dict[int, int] = {peer["id"]: -1 for peer in peers}
 
     # handle serialized message
     def rpc_handler(self, sender_id, rpc_message_json):
@@ -188,30 +196,16 @@ class Node:
             #     f"Failed to send vote request to {peer["ip"]}:{peer["port"]} due to {e}"
             # )
 
-    # RPC exposed function
-    def handle_heartbeat(self, term, leader_id):
-        debug_print(f"Received heart beat from {leader_id}, term {term}")
-        if term >= self.state.current_term:
-            debug_print("term <= leader")
-            self.election_timer.reset()
-            with self.lock:
-                self.role = Role.Follower
-            self.state.voted_for = None
-            self.state.current_term = term
-
-        else:
-            debug_print("term greater than leader")
-        # if the leader's term is less than self term, don't reset the timer
-
     def become_leader(self):
         with self.lock:
             self.role = Role.Leader
             self.votes_received.clear()
             self.state.voted_for = None
             self.election_timer.stop()
-            self.commit_index_table = {
+            self.next_index_table = {
                 peer["id"]: self.get_last_log_index() for peer in self.peers
             }
+            self.match_index_table = {peer["id"]: -1 for peer in self.peers}
             self.start_append_entry_loop()
         debug_print(
             f"Node {self.id} is now the leader for term {self.state.current_term}."
@@ -236,19 +230,21 @@ class Node:
         """
         The leader send a list of LogEntry to the followers
         """
-        start_index = self.commit_index_table[peer["id"]]
+        start_index = self.next_index_table[peer["id"]]
         if start_index != -1:
             data_to_sent = LogInfo(
                 leader_id=self.id,
                 leader_term=self.state.current_term,
-                index=start_index,
+                start_index=start_index,
+                commit_index=self.commit_index,
                 logs=self.log[start_index:],
             )
         else:  # start_index == -1 means follower's log is completely different from leader's, leader will just send the entire log
             data_to_sent = LogInfo(
                 leader_id=self.id,
                 leader_term=self.state.current_term,
-                index=start_index,
+                start_index=start_index,
+                commit_index=self.commit_index,
                 logs=self.log,
             )
         data_to_sent = json.dumps(asdict(data_to_sent))
@@ -259,18 +255,24 @@ class Node:
             )
             response.raise_for_status()
             data = response.json()
-            self.commit_index_table[peer["id"]] = data["last_index"]
+            self.next_index_table[peer["id"]] = data["last_index"]
+            if data["accept"]:
+                self.match_index_table[peer["id"]] = data["last_index"]
+                self.update_commit_index()
+                self.apply_to_state_machine(self.commit_index)
 
-            debug_print(self.commit_index_table)
+            debug_print(self.next_index_table)
 
         except requests.exceptions.RequestException as e:
-            debug_print(f"Failed to send heartbeat to {peer['ip']} due to {e}")
+            pass
+            # debug_print(f"Failed to send heartbeat to {peer['ip']} due to {e}")
 
     def handle_append_entry(self, unserialized_data) -> dict:
         log_info_dict = json.loads(unserialized_data)
-        leader_id = log_info_dict["leader_id"]  # The start index
-        leader_term = log_info_dict["leader_term"]  # The start index
-        index = log_info_dict["index"]  # The start index
+        leader_id = log_info_dict["leader_id"]
+        leader_term = log_info_dict["leader_term"]
+        start_index = log_info_dict["start_index"]
+        commit_index = log_info_dict["commit_index"]
         logs = [LogEntry(**entry) for entry in log_info_dict["logs"]]
         debug_print(f"Received heart beat from {leader_id}, term {leader_term}")
         if leader_term < self.state.current_term:
@@ -282,16 +284,54 @@ class Node:
         self.role = Role.Follower
         self.state = PersistentState(voted_for=None, current_term=leader_term)
 
-        if index <= 0:  # Leader is sending all its log, just apply it
+        if start_index <= 0:  # Leader is sending all its log, just apply it
             self.log = logs
+            self.apply_to_state_machine(commit_index)
             return {"accept": True, "last_index": self.get_last_log_index()}
         term = logs[0].term
 
         # Follower's log is equal to or longer than leader, just apply the remaining
-        if self.get_last_log_index() >= index and self.log[index].term == term:
-            self.log = self.log[:index] + logs
+        if (
+            self.get_last_log_index() >= start_index
+            and self.log[start_index].term == term
+        ):
+            self.log = self.log[:start_index] + logs
+            self.apply_to_state_machine(commit_index)
             return {"accept": True, "last_index": self.get_last_log_index()}
 
         # Local has different log from leader,
         else:
-            return {"accept": False, "last_index": index - 1}
+            return {
+                "accept": False,
+                "last_index": min(start_index - 1, self.get_last_log_index()),
+            }
+
+    def update_commit_index(self):
+        match_index_sorted = sorted(
+            list(self.match_index_table.values()) + [self.get_last_log_index()],
+            reverse=True,
+        )
+        majority_index = match_index_sorted[len(match_index_sorted) // 2]
+        if majority_index < 0:
+            return
+
+        if majority_index > self.commit_index:
+            self.commit_index = majority_index
+
+    def apply_to_state_machine(self, commit_index: int):
+        while self.last_applied < commit_index:
+            with self.lock:
+                try:
+                    self.last_applied += 1
+                    log = self.log[self.last_applied]
+                    if log.action == "CREATE":
+                        self.topics[log.topic] = []
+                    elif log.action == "APPEND" and log.message:
+                        self.topics[log.topic].append(log.message)
+                    elif log.action == "POP":
+                        self.topics[log.topic].pop()
+                    else:
+                        raise Exception("Unknown operation")
+
+                except Exception as e:
+                    debug_print(e)

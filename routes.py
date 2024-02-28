@@ -24,17 +24,6 @@ def request_vote(id):
     return jsonify(res)
 
 
-@app.route("/heartbeat", methods=["POST"])
-def heartbeat():
-    data = request.json
-    if not data:
-        return "", 400
-    term = data.get("term")
-    id = data.get("leader_id")
-    raft_node.handle_heartbeat(term, id)
-    return "", 200
-
-
 @app.route("/topic", methods=["PUT"])
 def create_topic():
 
@@ -92,8 +81,6 @@ def confirm_log():
         return f"{e}", 500
 
 
-
-
 @app.route("/status", methods=["GET"])
 def status():
     # This is a simplified placeholder. Actual implementation will vary.
@@ -101,7 +88,10 @@ def status():
         role=raft_node.role.value,
         term=raft_node.state.current_term,
         log=raft_node.log,
-        table=raft_node.commit_index_table,
+        next_table=raft_node.next_index_table,
+        match_table=raft_node.match_index_table,
+        commit_index=raft_node.commit_index,
+        topics=raft_node.topics,
     )
 
 
@@ -119,4 +109,3 @@ def election():
     # This is a simplified placeholder. Actual implementation will vary.
     raft_node.run_election()
     return "ok", 200
-
