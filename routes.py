@@ -81,28 +81,17 @@ def get_message(topic):
     return jsonify(success=True, message=message)
 
 
-@app.route("/confirm_log", methods=["POST"])
+@app.route("/append_entry", methods=["POST"])
 def confirm_log():
     unserialize_data = request.get_json()
     try:
-        response = raft_node.handle_confirm_log(unserialize_data)  # type: ignore
+        response = raft_node.handle_append_entry(unserialize_data)  # type: ignore
         return jsonify(response)
     except Exception as e:
         debug_print(e)
         return f"{e}", 500
 
 
-@app.route(
-    "/correct_log", methods=["POST"]
-)  # For follower to correct its log using info sent by the leader
-def correct_log():
-    log_info = request.json
-    try:
-        response = raft_node.handle_confirm_log(log_info)  # type: ignore
-        return jsonify(response)
-    except Exception as e:
-        debug_print(e)
-        return f"{e}", 500
 
 
 @app.route("/status", methods=["GET"])
@@ -131,40 +120,3 @@ def election():
     raft_node.run_election()
     return "ok", 200
 
-
-# @app.route("/a", methods=["GET"])
-# def a():
-#     import requests
-#     from raft import serialize, LogInfo
-#     import json
-
-#     logs = [
-#         LogEntry(message="hello", term=3),
-#         LogEntry(message="yo", term=4),
-#         LogEntry(message="how", term=1),
-#     ]
-#     log_info = LogInfo(index=1, logs=logs)
-#     data_to_sent = json.dumps(asdict(log_info))
-#     response = requests.post(f"http://127.0.0.1:46782/b", json=data_to_sent)
-#     return "ok", 200
-
-
-# @app.route("/b", methods=["POST"])
-# def b():
-#     data = request.get_json()
-#     from raft import deserialize
-#     import json
-
-#     log_info_dict = json.loads(data)
-#     logs = [LogEntry(**entry) for entry in log_info_dict["logs"]]
-#     debug_print(logs)
-#     debug_print(logs[0])
-#     debug_print(log_info_dict["index"])
-#     return "ok", 200
-
-
-# Send log confirm
-@app.route("/c", methods=["GET"])
-def c():
-    raft_node.handle_append_entry()
-    return "ok", 200

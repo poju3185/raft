@@ -35,6 +35,7 @@ class LogInfo:
     index: int
     logs: list[LogEntry]
 
+
 @dataclass
 class VoteRequest:
     term: int
@@ -61,25 +62,29 @@ class Node:
     def __init__(self, id, peers):
         self.id: int = id
         self.state = PersistentState()
-        # if self.id == 0:
-        #     self.role  = Role.Leader
-        # else:
-        #     self.role = Role.Follower
+        if self.id == 0:
+            self.state = PersistentState(current_term=3)
+        else:
+            self.state = PersistentState(current_term=1)
         self.role = Role.Follower
         self.peers: list[dict[str, int]] = peers
         if self.id == 0:
-            self.log: list[LogEntry] = [LogEntry(message="hi", term=0), LogEntry(message="yo", term=2), LogEntry(message="yo", term=3)]
+            self.log: list[LogEntry] = [
+                LogEntry(message="hi", term=0),
+                LogEntry(message="yo", term=2),
+                LogEntry(message="yo", term=3),
+            ]
         else:
             self.log: list[LogEntry] = [LogEntry(message="hi", term=1)]
         self.log_confirmed: set[int] = set()
         self.votes_received: set[int] = set()  # Count the votes received
-        self.election_timer = ResettableTimer(self.run_election, interval_lb=5000, interval_ub=5150)  # 150, 300
+        self.election_timer = ResettableTimer(
+            self.run_election, interval_lb=5000, interval_ub=5150
+        )  # 150, 300
         self.election_timer.run()
-        self.lock = Lock()  
+        self.lock = Lock()
         # Only leader needs to maintain the table, the last same log between leader and follower
-        self.commit_index_table: dict[int, int] = {
-            peer["id"]: 2 for peer in peers
-        }
+        self.commit_index_table: dict[int, int] = {peer["id"]: 2 for peer in peers}
 
     # handle serialized message
     def rpc_handler(self, sender_id, rpc_message_json):
@@ -96,17 +101,21 @@ class Node:
             )
 
         # If the vote term is greater than the current term, or the term is equal to the current term and the node has not yet voted or already voted for the sender
-        if (vote_request.term > self.state.current_term) or (self.state.voted_for is None):
+        if (vote_request.term > self.state.current_term) or (
+            self.state.voted_for is None
+        ):
             if self.is_log_up_to_date(
                 vote_request.last_log_index, vote_request.last_log_term
-            ): 
+            ):
                 self.role = Role.Follower
-                self.state = PersistentState(current_term=vote_request.term, voted_for=sender_id)
+                self.state = PersistentState(
+                    current_term=vote_request.term, voted_for=sender_id
+                )
                 self.election_timer.reset()
                 return serialize(
                     VoteResponse(term=self.state.current_term, vote_granted=True)
                 )
-       
+
         return serialize(VoteResponse(term=self.state.current_term, vote_granted=False))
 
     def is_log_up_to_date(self, last_log_index, last_log_term):
@@ -133,7 +142,9 @@ class Node:
             self.role = Role.Candidate
             self.state.voted_for = self.id
             self.votes_received = {self.id}
-        debug_print(f"Node {self.id} starting election for term {self.state.current_term}, timer interval {self.election_timer.timer.interval}")
+        debug_print(
+            f"Node {self.id} starting election for term {self.state.current_term}, timer interval {self.election_timer.timer.interval}"
+        )
         self.broadcast_vote_requests()
 
     def broadcast_vote_requests(self):
@@ -151,7 +162,9 @@ class Node:
     def send_vote_request(self, peer, vote_request):
         try:
             response = requests.post(
-                f"http://{peer['ip']}:{peer['port']}/request-vote/{self.id}", json=vote_request, timeout=2
+                f"http://{peer['ip']}:{peer['port']}/request-vote/{self.id}",
+                json=vote_request,
+                timeout=2,
             )
             response.raise_for_status()  # Raises an HTTPError if the status is 4xx, 5xx
             vote_response = deserialize(response.json())
@@ -159,19 +172,21 @@ class Node:
                 raise TypeError("vote_response is not a VoteResponse object")
             debug_print(f"=====================\n{vote_response}\n=================")
             if vote_response.vote_granted:
-                self.votes_received.add(peer["id"])  
+                self.votes_received.add(peer["id"])
                 if (
-                    len(self.votes_received) > (len(self.peers)+1) // 2  # include the node itself
+                    len(self.votes_received)
+                    > (len(self.peers) + 1) // 2  # include the node itself
                     and self.role != Role.Leader
                 ):
                     self.become_leader()
             else:
                 debug_print("vote rejected")
- 
+
         except Exception as e:
-            debug_print(
-                f"Failed to send vote request to {peer["ip"]}:{peer["port"]} due to {e}"
-            )
+            pass
+            # debug_print(
+            #     f"Failed to send vote request to {peer["ip"]}:{peer["port"]} due to {e}"
+            # )
 
     # RPC exposed function
     def handle_heartbeat(self, term, leader_id):
@@ -183,7 +198,7 @@ class Node:
                 self.role = Role.Follower
             self.state.voted_for = None
             self.state.current_term = term
-      
+
         else:
             debug_print("term greater than leader")
         # if the leader's term is less than self term, don't reset the timer
@@ -194,50 +209,27 @@ class Node:
             self.votes_received.clear()
             self.state.voted_for = None
             self.election_timer.stop()
-            self.start_heartbeat_loop()
+            self.start_append_entry_loop()
         debug_print(
             f"Node {self.id} is now the leader for term {self.state.current_term}."
         )
 
-
-    def start_heartbeat_loop(self):
-        self.heartbeat_thread = threading.Thread(target=self.send_heartbeats_loop)
+    def start_append_entry_loop(self):
+        self.heartbeat_thread = threading.Thread(target=self.send_append_entries_loop)
         # self.heartbeat_thread.daemon = True
         self.heartbeat_thread.start()
 
-    def send_heartbeats_loop(self):
+    def send_append_entries_loop(self):
         HEARTBEAT_INTERVAL = 3
-        while self.role ==  Role.Leader:
-            self.send_heartbeats()
+        while self.role == Role.Leader:
+            self.send_append_entries()
             time.sleep(HEARTBEAT_INTERVAL)
 
-    def send_heartbeats(self):
-        heartbeat = {
-                "term": self.state.current_term,
-                "leader_id": self.id,
-            }
+    def send_append_entries(self):
         for peer in self.peers:
-            threading.Thread(
-                target=self.confirm_log_consistent, args=(peer,)
-            ).start()
+            threading.Thread(target=self.send_append_entry, args=(peer,)).start()
 
- 
-
-    def send_heartbeat(self, peer, heartbeat):
-        try:
-            response = requests.post(f"http://{peer['ip']}:{peer['port']}/heartbeat", json=heartbeat)
-            response.raise_for_status()
-        except requests.exceptions.RequestException as e:
-            debug_print(f"Failed to send heartbeat to {peer['ip']} due to {e}")
-    
-
-    def handle_append_entry(self):
-        self.log_confirmed.add(self.id)
-        for peer in self.peers[:1]:
-            self.confirm_log_consistent(peer)
-
-
-    def confirm_log_consistent(self,peer: dict):
+    def send_append_entry(self, peer: dict):
         """
         The leader send a list of LogEntry to the followers
         """
@@ -247,35 +239,36 @@ class Node:
                 leader_id=self.id,
                 leader_term=self.state.current_term,
                 index=start_index,
-                logs=self.log[start_index:]
+                logs=self.log[start_index:],
             )
         else:  # start_index == -1 means follower's log is completely different from leader's, leader will just send the entire log
             data_to_sent = LogInfo(
                 leader_id=self.id,
                 leader_term=self.state.current_term,
                 index=start_index,
-                logs=self.log
+                logs=self.log,
             )
         data_to_sent = json.dumps(asdict(data_to_sent))
 
         try:
-            response = requests.post(f"http://{peer['ip']}:{peer['port']}/confirm_log", json=data_to_sent)
+            response = requests.post(
+                f"http://{peer['ip']}:{peer['port']}/append_entry", json=data_to_sent
+            )
             response.raise_for_status()
             data = response.json()
             self.commit_index_table[peer["id"]] = data["last_index"]
 
             debug_print(self.commit_index_table)
 
-
         except requests.exceptions.RequestException as e:
             debug_print(f"Failed to send heartbeat to {peer['ip']} due to {e}")
-    
-    def handle_confirm_log(self, unserialized_data) -> dict:
+
+    def handle_append_entry(self, unserialized_data) -> dict:
         self.election_timer.reset()
         log_info_dict = json.loads(unserialized_data)
-        leader_id = log_info_dict["leader_id"] # The start index
-        leader_term = log_info_dict["leader_term"] # The start index
-        index = log_info_dict["index"] # The start index
+        leader_id = log_info_dict["leader_id"]  # The start index
+        leader_term = log_info_dict["leader_term"]  # The start index
+        index = log_info_dict["index"]  # The start index
         logs = [LogEntry(**entry) for entry in log_info_dict["logs"]]
         debug_print(f"Received heart beat from {leader_id}, term {leader_term}")
         if leader_term < self.state.current_term:
@@ -284,27 +277,17 @@ class Node:
         debug_print("term <= leader")
         self.role = Role.Follower
         self.state = PersistentState(voted_for=None, current_term=leader_term)
-      
+
         if index <= 0:  # Leader is sending all its log, just apply it
             self.log = logs
             return {"accept": True, "last_index": self.get_last_log_index()}
         term = logs[0].term
 
         # Follower's log is equal to or longer than leader, just apply the remaining
-        if self.get_last_log_index() >= index and self.log[index].term == term:  
+        if self.get_last_log_index() >= index and self.log[index].term == term:
             self.log = self.log[:index] + logs
             return {"accept": True, "last_index": self.get_last_log_index()}
 
-        # Local has different log from leader, 
+        # Local has different log from leader,
         else:
-            return {"accept": False, "last_index": index-1}
-            
-        
-
-
-
-
-
-
-
-
+            return {"accept": False, "last_index": index - 1}
