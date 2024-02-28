@@ -84,7 +84,7 @@ class Node:
         self.election_timer.run()
         self.lock = Lock()
         # Only leader needs to maintain the table, the last same log between leader and follower
-        self.commit_index_table: dict[int, int] = {peer["id"]: 2 for peer in peers}
+        self.commit_index_table: dict[int, int] = {peer["id"]: -1 for peer in peers}
 
     # handle serialized message
     def rpc_handler(self, sender_id, rpc_message_json):
@@ -209,6 +209,9 @@ class Node:
             self.votes_received.clear()
             self.state.voted_for = None
             self.election_timer.stop()
+            self.commit_index_table = {
+                peer["id"]: self.get_last_log_index() for peer in self.peers
+            }
             self.start_append_entry_loop()
         debug_print(
             f"Node {self.id} is now the leader for term {self.state.current_term}."
