@@ -17,7 +17,7 @@ def parse_config_json(fp, idx):
             my_ip, my_port = ip, port
             my_port = int(my_port)
         else:
-            peers.append({"ip": ip, "port": int(port)})
+            peers.append({"id": i, "ip": ip, "port": int(port)})
 
     assert my_ip, my_port
     return my_ip, my_port, peers
