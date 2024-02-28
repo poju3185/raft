@@ -267,7 +267,6 @@ class Node:
             debug_print(f"Failed to send heartbeat to {peer['ip']} due to {e}")
 
     def handle_append_entry(self, unserialized_data) -> dict:
-        self.election_timer.reset()
         log_info_dict = json.loads(unserialized_data)
         leader_id = log_info_dict["leader_id"]  # The start index
         leader_term = log_info_dict["leader_term"]  # The start index
@@ -276,7 +275,9 @@ class Node:
         debug_print(f"Received heart beat from {leader_id}, term {leader_term}")
         if leader_term < self.state.current_term:
             debug_print("term greater than leader")
+            # if local term is greater than leader, don't reset the timer, wait for the next election
             return {"accept": False, "last_index": self.get_last_log_index()}
+        self.election_timer.reset()
         debug_print("term <= leader")
         self.role = Role.Follower
         self.state = PersistentState(voted_for=None, current_term=leader_term)
