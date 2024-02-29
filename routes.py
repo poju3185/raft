@@ -8,8 +8,10 @@ app = Flask(__name__)
 
 raft_node: Node = None  # type: ignore
 
-# In-memory storage for topics and their messages
-topics = {}
+
+"""
+Client endpoints
+"""
 
 
 @app.route("/", methods=["GET"])
@@ -17,31 +19,25 @@ def home():
     return "Raft MQ final project"
 
 
-@app.route("/request-vote/<id>", methods=["POST"])
-def request_vote(id):
-    rpc_message_json = request.json
-    res = raft_node.rpc_handler(id, rpc_message_json)
-    return jsonify(res)
-
-
 @app.route("/topic", methods=["PUT"])
 def create_topic():
-
-    # data = request.json
-    # if not data:
-    #     return jsonify(success=False), 400  # Bad Request for missing request body
-    # topic = data.get("topic")
-    # if topic is None or not isinstance(topic, str):
-    #     return jsonify(success=False), 400  # Bad Request for invalid input
-    # if topic in topics:
-    #     return jsonify(success=False), 409  # Conflict if topic already exists
-    # topics[topic] = []
+    data = request.json
+    if not data:
+        return jsonify(success=False), 400  # Bad Request for missing request body
+    topic = data.get("topic")
+    if topic is None or not isinstance(topic, str):
+        return jsonify(success=False), 400  # Bad Request for invalid input
+    if topic in raft_node.topics:
+        return jsonify(success=False), 409  # Conflict if topic already exists
+    raft_node.log.append(
+        LogEntry(action="CREATE", topic=topic, term=raft_node.state.current_term)
+    )
     return jsonify(success=True)
 
 
 @app.route("/topic", methods=["GET"])
 def list_topics():
-    return jsonify(success=True, topics=list(topics.keys()))
+    return jsonify(success=True, topics=list(raft_node.topics.keys()))
 
 
 @app.route("/message", methods=["PUT"])
@@ -53,21 +49,47 @@ def add_message():
     message = data.get("message")
     if topic is None or message is None:
         return jsonify(success=False), 400  # Bad Request for missing topic or message
-    if topic not in topics:
+    if topic not in raft_node.topics:
         return jsonify(success=False), 404  # Not Found if topic does not exist
-    topics[topic].append(message)
+    raft_node.log.append(
+        LogEntry(
+            action="APPEND",
+            topic=topic,
+            message=message,
+            term=raft_node.state.current_term,
+        )
+    )
     return jsonify(success=True)
 
 
 @app.route("/message/<topic>", methods=["GET"])
 def get_message(topic):
-    if topic not in topics or not topics[topic]:
+    if topic not in raft_node.topics or not raft_node.topics[topic]:
         return (
             jsonify(success=False),
             404,
         )  # Not Found if topic does not exist or is empty
-    message = topics[topic].pop(0)  # Pop the first message
+    raft_node.log.append(
+        LogEntry(
+            action="POP",
+            topic=topic,
+            term=raft_node.state.current_term,
+        )
+    )
+    message = raft_node.topics[topic][0]  # Don't pop the message yet, just read
     return jsonify(success=True, message=message)
+
+
+"""
+Server endpoints
+"""
+
+
+@app.route("/request-vote/<id>", methods=["POST"])
+def request_vote(id):
+    rpc_message_json = request.json
+    res = raft_node.rpc_handler(id, rpc_message_json)
+    return jsonify(res)
 
 
 @app.route("/append_entry", methods=["POST"])
