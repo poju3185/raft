@@ -63,31 +63,36 @@ def deserialize(rpc_dict):
 
 class Node:
     def __init__(self, id, peers):
+        self.HEARTBEAT_INTERVAL = 0.1  # s
+        self.election_timer = ResettableTimer(
+            self.run_election, interval_lb=150, interval_ub=300
+        )  # 150, 300  # ms
+        self.election_timer.run()
         self.id: int = id
         self.topics: dict[str, list[str]] = {}
-        if self.id == 0:
-            self.state = PersistentState(current_term=3)
-        else:
-            self.state = PersistentState(current_term=1)
+        self.state = PersistentState()
+        # if self.id == 0:
+        #     self.state = PersistentState(current_term=3)
+        # else:
+        #     self.state = PersistentState(current_term=1)
         self.role = Role.Follower
         self.peers: list[dict[str, int]] = peers
-        if self.id == 0:
-            self.log: list[LogEntry] = [
-                LogEntry(action="CREATE", topic="Game", term=0),
-                LogEntry(action="CREATE", topic="Anime", term=1),
-                LogEntry(action="APPEND", topic="Game", message="hi", term=2),
-            ]
-        else:
-            self.log: list[LogEntry] = [
-                LogEntry(action="CREATE", topic="Sport", term=1)
-            ]
+        self.log: list[LogEntry] = []
+        # if self.id == 0:
+        #     self.log: list[LogEntry] = [
+        #         LogEntry(action="CREATE", topic="Game", term=0),
+        #         LogEntry(action="CREATE", topic="Anime", term=1),
+        #         LogEntry(action="APPEND", topic="Game", message="hi", term=2),
+        #     ]
+        # else:
+        #     self.log: list[LogEntry] = [
+        #         LogEntry(action="CREATE", topic="Sport", term=1)
+        #     ]
         self.log_confirmed: set[int] = set()
         self.votes_received: set[int] = set()  # Count the votes received
-        self.election_timer = ResettableTimer(
-            self.run_election, interval_lb=5000, interval_ub=5150
-        )  # 150, 300
-        self.election_timer.run()
+
         self.lock = Lock()
+        self.commit_index_condition = threading.Condition()
         self.commit_index = -1
         self.last_applied = -1
         # Only leader needs to maintain the table, the last same log between leader and follower
@@ -166,6 +171,12 @@ class Node:
         )
         for peer in self.peers:
             self.send_vote_request(peer, vote_request)
+        if (
+            len(self.votes_received)
+            > (len(self.peers) + 1) // 2  # include the node itself
+            and self.role != Role.Leader
+        ):
+            self.become_leader()
 
     def send_vote_request(self, peer, vote_request):
         try:
@@ -197,6 +208,9 @@ class Node:
             # )
 
     def become_leader(self):
+        if self.role == Role.Leader:
+            return
+
         with self.lock:
             self.role = Role.Leader
             self.votes_received.clear()
@@ -217,10 +231,11 @@ class Node:
         self.heartbeat_thread.start()
 
     def send_append_entries_loop(self):
-        HEARTBEAT_INTERVAL = 3
         while self.role == Role.Leader:
+            self.update_commit_index()
+            self.apply_to_state_machine(self.commit_index)
             self.send_append_entries()
-            time.sleep(HEARTBEAT_INTERVAL)
+            time.sleep(self.HEARTBEAT_INTERVAL)
 
     def send_append_entries(self):
         for peer in self.peers:
@@ -258,8 +273,6 @@ class Node:
             self.next_index_table[peer["id"]] = data["last_index"]
             if data["accept"]:
                 self.match_index_table[peer["id"]] = data["last_index"]
-                self.update_commit_index()
-                self.apply_to_state_machine(self.commit_index)
 
             debug_print(self.next_index_table)
 
@@ -308,7 +321,8 @@ class Node:
 
     def update_commit_index(self):
         match_index_sorted = sorted(
-            list(self.match_index_table.values()) + [self.get_last_log_index()],
+            list(self.match_index_table.values())
+            + [self.get_last_log_index()],  # Including self
             reverse=True,
         )
         majority_index = match_index_sorted[len(match_index_sorted) // 2]
@@ -316,7 +330,10 @@ class Node:
             return
 
         if majority_index > self.commit_index:
-            self.commit_index = majority_index
+            # self.commit_index = majority_index
+            with self.commit_index_condition:
+                self.commit_index = majority_index
+                self.commit_index_condition.notify_all()
 
     def apply_to_state_machine(self, commit_index: int):
         while self.last_applied < commit_index:
@@ -329,9 +346,17 @@ class Node:
                     elif log.action == "APPEND" and log.message:
                         self.topics[log.topic].append(log.message)
                     elif log.action == "POP":
-                        self.topics[log.topic].pop()
+                        self.topics[log.topic].pop(0)
                     else:
                         raise Exception("Unknown operation")
 
                 except Exception as e:
                     debug_print(e)
+    def commit_and_apply(self):
+        self.update_commit_index()
+        self.apply_to_state_machine(self.commit_index)
+
+    def wait_until_commit(self, commit_index):
+        with self.commit_index_condition:
+            while self.commit_index < commit_index:
+                self.commit_index_condition.wait()

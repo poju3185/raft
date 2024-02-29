@@ -27,11 +27,12 @@ def create_topic():
     topic = data.get("topic")
     if topic is None or not isinstance(topic, str):
         return jsonify(success=False), 400  # Bad Request for invalid input
-    if topic in raft_node.topics:
-        return jsonify(success=False), 409  # Conflict if topic already exists
     raft_node.log.append(
         LogEntry(action="CREATE", topic=topic, term=raft_node.state.current_term)
     )
+    if topic in raft_node.topics:
+        return jsonify(success=False), 409  # Conflict if topic already exists
+    raft_node.wait_until_commit(raft_node.get_last_log_index())
     return jsonify(success=True)
 
 
@@ -59,6 +60,7 @@ def add_message():
             term=raft_node.state.current_term,
         )
     )
+    raft_node.wait_until_commit(raft_node.get_last_log_index())
     return jsonify(success=True)
 
 
@@ -69,6 +71,7 @@ def get_message(topic):
             jsonify(success=False),
             404,
         )  # Not Found if topic does not exist or is empty
+    message = raft_node.topics[topic][0]  # Don't pop the message yet, just read
     raft_node.log.append(
         LogEntry(
             action="POP",
@@ -76,7 +79,7 @@ def get_message(topic):
             term=raft_node.state.current_term,
         )
     )
-    message = raft_node.topics[topic][0]  # Don't pop the message yet, just read
+    raft_node.wait_until_commit(raft_node.get_last_log_index())
     return jsonify(success=True, message=message)
 
 
