@@ -3,6 +3,8 @@ import requests
 import time
 from test_utils import Swarm
 
+"""Fault-tolerant Test (Remember to launch enough nodes first)"""
+
 NUM_NODES_ARRAY = [3, 5, 7]
 PROGRAM_FILE_PATH = "src/node.py"
 ELECTION_TIMEOUT = 2.0
