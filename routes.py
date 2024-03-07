@@ -105,10 +105,9 @@ def confirm_log():
         debug_print(e)
         return f"{e}", 500
 
-
+# For debugging
 @app.route("/status", methods=["GET"])
 def status():
-    # This is a simplified placeholder. Actual implementation will vary.
     return jsonify(
         role=raft_node.role.value,
         term=raft_node.state.current_term,
@@ -123,7 +122,6 @@ def status():
 # For testing
 @app.route("/leader", methods=["GET"])
 def leader():
-    # This is a simplified placeholder. Actual implementation will vary.
     raft_node.become_leader()
     return "ok", 200
 
@@ -131,6 +129,5 @@ def leader():
 # For testing
 @app.route("/election", methods=["GET"])
 def election():
-    # This is a simplified placeholder. Actual implementation will vary.
     raft_node.run_election()
     return "ok", 200

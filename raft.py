@@ -71,26 +71,11 @@ class Node:
         self.id: int = id
         self.topics: dict[str, list[str]] = {}
         self.state = PersistentState()
-        # if self.id == 0:
-        #     self.state = PersistentState(current_term=3)
-        # else:
-        #     self.state = PersistentState(current_term=1)
         self.role = Role.Follower
         self.peers: list[dict[str, int]] = peers
         self.log: list[LogEntry] = []
-        # if self.id == 0:
-        #     self.log: list[LogEntry] = [
-        #         LogEntry(action="CREATE", topic="Game", term=0),
-        #         LogEntry(action="CREATE", topic="Anime", term=1),
-        #         LogEntry(action="APPEND", topic="Game", message="hi", term=2),
-        #     ]
-        # else:
-        #     self.log: list[LogEntry] = [
-        #         LogEntry(action="CREATE", topic="Sport", term=1)
-        #     ]
         self.log_confirmed: set[int] = set()
         self.votes_received: set[int] = set()  # Count the votes received
-
         self.lock = Lock()
         self.commit_index_condition = threading.Condition()
         self.commit_index = -1
@@ -227,7 +212,6 @@ class Node:
 
     def start_append_entry_loop(self):
         self.heartbeat_thread = threading.Thread(target=self.send_append_entries_loop)
-        # self.heartbeat_thread.daemon = True
         self.heartbeat_thread.start()
 
     def send_append_entries_loop(self):
