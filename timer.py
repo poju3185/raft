@@ -19,3 +19,6 @@ class ResettableTimer:
         self.timer.cancel()
         self.timer = Timer(self._interval(), self.function)
         self.timer.start()
+
+    def stop(self):
+        self.timer.cancel()
